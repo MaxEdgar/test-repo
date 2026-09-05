@@ -25,7 +25,19 @@ First run: builds llama.cpp (~2–5 min) and downloads the model (~5.6 GB). Late
 
 Env overrides: `THREADS`, `CTX_SIZE`, `MODEL_DIR`, `LLAMA_DIR`.
 
-## 3 ways to talk to the AI
+## ☁️ Chat with the AI running on GitHub's servers (free compute)
+
+Your PC does nothing — GitHub's runner hosts the model. GitHub-hosted runners have no inbound ports, so the workflow opens an outbound **Cloudflare quick tunnel** and hands you a public https URL.
+
+1. **Actions → Chat Server (Remote AI) → Run workflow**
+2. Wait ~5–8 min (build + 5.6 GB model download), then open the run summary. You'll see:
+   - **[Open chat UI]** link → chat in your browser (enter the API key shown once)
+   - Or from a terminal: `BASE_URL=<tunnel-url> API_KEY=<key> ./scripts/chat.sh`
+3. Run stays alive up to **6 h**; cancel it in the Actions tab to shut the AI down.
+
+The tunnel URL and key change every run. The key is required (random per run), so strangers who find the URL can't use your session.
+
+## 💻 Run locally instead
 
 Start the server first (loads the model once, stays in background):
 
@@ -41,11 +53,13 @@ Then communicate:
 ### 1. Web UI (easiest)
 Open **http://127.0.0.1:8080** in your browser — llama-server ships with a built-in chat UI.
 
-### 2. Terminal chat
+### 2. Terminal chat (local)
 
 ```bash
 ./scripts/chat.sh            # REPL with session memory + live token streaming
 ```
+
+For a remote server (GitHub runner tunnel), add `BASE_URL` and `API_KEY`.
 
 In-chat commands: `/quit`, `/reset` (clear history), `/system <text>` (change persona).
 Extras: `MAX_TOKENS=1024 ./scripts/chat.sh`, `BASE_URL=http://other-host:8080 ./scripts/chat.sh` to talk to a remote instance.
