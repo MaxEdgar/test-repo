@@ -17,13 +17,57 @@ Runs the **Qwen3.5-9B-abliterated** (uncensored, abliterated) model entirely on 
 ## Run on your machine
 
 ```bash
-./scripts/run-model.sh                # interactive chat
-./scripts/run-model.sh "your prompt"  # one-shot prompt -> answer
+./scripts/run-model.sh                # one-shot prompt -> answer
+./scripts/run-model.sh "your prompt"  # same, with your prompt
 ```
 
 First run: builds llama.cpp (~2–5 min) and downloads the model (~5.6 GB). Later runs start instantly.
 
 Env overrides: `THREADS`, `CTX_SIZE`, `MODEL_DIR`, `LLAMA_DIR`.
+
+## 3 ways to talk to the AI
+
+Start the server first (loads the model once, stays in background):
+
+```bash
+./scripts/serve.sh          # start — prints the URLs when ready
+./scripts/serve.sh --status # check if it's up
+./scripts/serve.sh --logs   # follow logs
+./scripts/serve.sh --stop   # stop it
+```
+
+Then communicate:
+
+### 1. Web UI (easiest)
+Open **http://127.0.0.1:8080** in your browser — llama-server ships with a built-in chat UI.
+
+### 2. Terminal chat
+
+```bash
+./scripts/chat.sh            # REPL with session memory + live token streaming
+```
+
+In-chat commands: `/quit`, `/reset` (clear history), `/system <text>` (change persona).
+Extras: `MAX_TOKENS=1024 ./scripts/chat.sh`, `BASE_URL=http://other-host:8080 ./scripts/chat.sh` to talk to a remote instance.
+
+### 3. REST API (OpenAI-compatible)
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+```python
+from openai import OpenAI            # pip install openai
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="none")
+reply = client.chat.completions.create(
+    model="local", messages=[{"role": "user", "content": "Hello!"}]
+)
+print(reply.choices[0].message.content)
+```
+
+Any OpenAI-compatible tool (LangChain, Open WebUI, VS Code extensions...) can point at `http://127.0.0.1:8080/v1`.
 
 ## Run via GitHub Actions (manual button)
 
