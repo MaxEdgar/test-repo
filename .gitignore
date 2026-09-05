@@ -1,0 +1,14 @@
+# Model weights (never commit multi-GB files)
+*.gguf
+*.gguf.part
+*.safetensors
+models/
+
+# llama.cpp build cache
+llama.cpp/
+.cache/
+
+# General
+__pycache__/
+*.log
+.DS_Store

@@ -1,0 +1,79 @@
+name: Run Local AI Model
+
+# Manual trigger — press "Run workflow" in the Actions tab
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Prompt to send to the model (leave empty to just verify it loads)'
+        required: false
+        default: 'Say hello and tell me which model you are.'
+      max_tokens:
+        description: 'Max tokens to generate'
+        required: false
+        default: '512'
+
+jobs:
+  run-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential cmake git jq
+
+      - name: Build llama.cpp (CPU)
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp "$HOME/llama.cpp"
+          cmake -S "$HOME/llama.cpp" -B "$HOME/llama.cpp/build" -DGGML_NATIVE=ON
+          cmake --build "$HOME/llama.cpp/build" --config Release -j4
+
+      - name: Download model (Qwen3.5-9B-abliterated Q4_K_M, ~5.6 GB)
+        run: |
+          mkdir -p "$HOME/models"
+          curl -L --fail --retry 3 --retry-delay 5 -C - \
+            --progress-bar \
+            -o "$HOME/models/Qwen3.5-9B-abliterated-Q4_K_M.gguf" \
+            "https://huggingface.co/lukey03/Qwen3.5-9B-abliterated-GGUF/resolve/main/Qwen3.5-9B-abliterated-Q4_K_M.gguf"
+          du -h "$HOME/models/"*.gguf
+
+      - name: Start llama-server and wait until healthy
+        run: |
+          "$HOME/llama.cpp/build/bin/llama-server" \
+            -m "$HOME/models/Qwen3.5-9B-abliterated-Q4_K_M.gguf" \
+            -c 4096 -t 4 --no-warmup \
+            --host 127.0.0.1 --port 8080 &
+          echo $! > server.pid
+          for i in $(seq 1 180); do
+            if curl -s http://127.0.0.1:8080/health | grep -q '"ok"'; then
+              echo "Server healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Server failed to become healthy in 180s" >&2
+          exit 1
+
+      - name: Run prompt through the model
+        run: |
+          PROMPT="${{ inputs.prompt }}"
+          MAX_TOKENS="${{ inputs.max_tokens }}"
+          RESPONSE=$(curl -s http://127.0.0.1:8080/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg p "$PROMPT" --argjson m "$MAX_TOKENS" \
+              '{messages:[{role:"user",content:$p}],max_tokens:$m}')")
+          ANSWER=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+          echo "### Model response" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$ANSWER" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$ANSWER"
+          echo "$RESPONSE" | jq -r '"--- usage: \(.usage.prompt_tokens) prompt / \(.usage.completion_tokens) generated tokens ---"'
+
+      - name: Stop server
+        if: always()
+        run: |
+          [ -f server.pid ] && kill "$(cat server.pid)" 2>/dev/null || true
