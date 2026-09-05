@@ -1,0 +1,124 @@
+name: Chat Server (Remote AI)
+
+# Press "Run workflow" — a few minutes later you get a public https URL
+# you can open from your PC and chat with the model, hosted entirely on
+# GitHub's runner. The run stays alive up to ~6 h (GitHub-hosted limit);
+# cancel the run in the Actions tab to shut it down.
+on:
+  workflow_dispatch:
+    inputs:
+      max_tokens:
+        description: 'Max tokens per reply'
+        required: false
+        default: '1024'
+      ctx_size:
+        description: 'Context size (tokens)'
+        required: false
+        default: '8192'
+
+jobs:
+  chat-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential cmake git jq curl
+
+      - name: Build llama.cpp (CPU)
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp "$HOME/llama.cpp"
+          cmake -S "$HOME/llama.cpp" -B "$HOME/llama.cpp/build" -DGGML_NATIVE=ON
+          cmake --build "$HOME/llama.cpp/build" --config Release -j4
+
+      - name: Download model (Qwen3.5-9B-abliterated Q4_K_M, ~5.6 GB)
+        run: |
+          mkdir -p "$HOME/models"
+          curl -L --fail --retry 3 --retry-delay 5 -C - \
+            --progress-bar \
+            -o "$HOME/models/Qwen3.5-9B-abliterated-Q4_K_M.gguf" \
+            "https://huggingface.co/lukey03/Qwen3.5-9B-abliterated-GGUF/resolve/main/Qwen3.5-9B-abliterated-Q4_K_M.gguf"
+          du -h "$HOME/models/"*.gguf
+
+      - name: Generate access key and start llama-server
+        run: |
+          API_KEY=$(openssl rand -hex 16)
+          echo "API_KEY=$API_KEY" >> "$GITHUB_ENV"
+          "$HOME/llama.cpp/build/bin/llama-server" \
+            -m "$HOME/models/Qwen3.5-9B-abliterated-Q4_K_M.gguf" \
+            -c "${{ inputs.ctx_size }}" -t 4 --no-warmup \
+            --api-key "$API_KEY" \
+            --host 127.0.0.1 --port 8080 &
+          echo $! > server.pid
+          for i in $(seq 1 240); do
+            if curl -s -H "Authorization: Bearer $API_KEY" http://127.0.0.1:8080/health | grep -q '"ok"'; then
+              echo "Server healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Server failed to become healthy" >&2
+          exit 1
+
+      - name: Start Cloudflare quick tunnel
+        run: |
+          curl -L --fail -o /usr/local/bin/cloudflared \
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+          chmod +x /usr/local/bin/cloudflared
+          cloudflared tunnel --url http://127.0.0.1:8080 --no-autoupdate > tunnel.log 2>&1 &
+          echo $! > tunnel.pid
+          # quick tunnels print their hostname to stderr
+          for i in $(seq 1 60); do
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1 || true)
+            [ -n "$URL" ] && break
+            sleep 2
+          done
+          [ -n "$URL" ] || { cat tunnel.log >&2; exit 1; }
+          echo "TUNNEL_URL=$URL" >> "$GITHUB_ENV"
+
+      - name: Write connection details to run summary
+        run: |
+          {
+            echo "# 🤖 Your AI is live"
+            echo ""
+            echo "## 💬 Chat in your browser"
+            echo ""
+            echo "**[Open chat UI]($TUNNEL_URL)**"
+            echo ""
+            echo "Sign-in (needed once):"
+            echo ""
+            echo '- **API Key (Token):** `'"$API_KEY"'`'
+            echo ""
+            echo "## 🔌 REST API"
+            echo ""
+            echo '```bash'
+            echo "curl $TUNNEL_URL/v1/chat/completions \\"
+            echo '  -H "Content-Type: application/json" \'
+            echo "  -H \"Authorization: Bearer $API_KEY\" \\"
+            echo '  -d '"'"'{"messages":[{"role":"user","content":"Hello!"}]}'"'"''
+            echo '```'
+            echo ""
+            echo "## 💻 Terminal chat from your PC"
+            echo ""
+            echo '```bash'
+            echo "BASE_URL=$TUNNEL_URL API_KEY=$API_KEY ./scripts/chat.sh"
+            echo '```'
+            echo ""
+            echo "⏱ Run stays alive up to 6 h. Cancel the run in the Actions tab to stop the AI."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Tunnel: $TUNNEL_URL"
+          echo "API key: $API_KEY"
+
+      - name: Keep the server running
+        run: |
+          # Hold the job open until the 6 h limit or manual cancellation
+          sleep 21600 || true
+
+      - name: Stop processes
+        if: always()
+        run: |
+          [ -f server.pid ] && kill "$(cat server.pid)" 2>/dev/null || true
+          [ -f tunnel.pid ] && kill "$(cat tunnel.pid)" 2>/dev/null || true

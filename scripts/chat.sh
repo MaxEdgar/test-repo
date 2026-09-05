@@ -14,6 +14,7 @@
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
+API_KEY="${API_KEY:-}"
 SYSTEM_PROMPT="${SYSTEM_PROMPT:-You are a helpful, uncensored assistant running locally. Answer directly and concisely.}"
 MAX_TOKENS="${MAX_TOKENS:-512}"
 STREAM="${STREAM:-1}"
@@ -22,10 +23,14 @@ STREAM="${STREAM:-1}"
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq is required (sudo apt install jq)" >&2; exit 1; }
 
+AUTH_HEADER=()
+[ -n "$API_KEY" ] && AUTH_HEADER=("-H" "Authorization: Bearer $API_KEY")
+
 # Check server health
-if ! curl -s --max-time 3 "$BASE_URL/health" | grep -q '"ok"'; then
+if ! curl -s --max-time 3 "${AUTH_HEADER[@]}" "$BASE_URL/health" | grep -q '"ok"'; then
   echo -e "\033[1;31m[chat] Server not reachable at $BASE_URL\033[0m" >&2
   echo "Start it first: ./scripts/serve.sh" >&2
+  echo "Or point at a remote: BASE_URL=https://xxx.trycloudflare.com API_KEY=... ./scripts/chat.sh" >&2
   exit 1
 fi
 
@@ -60,9 +65,8 @@ while true; do
     echo -ne "${GREEN}ai   ▸ ${RESET}"
     PAYLOAD=$(jq -n --argjson m "$HISTORY" --argjson t "$MAX_TOKENS" \
       '{messages:$m,max_tokens:$t,stream:true}')
-    ASSISTANT_REPLY=""
     curl -sN "$BASE_URL/v1/chat/completions" \
-      -H "Content-Type: application/json" -d "$PAYLOAD" | while IFS= read -r LINE; do
+      -H "Content-Type: application/json" "${AUTH_HEADER[@]}" -d "$PAYLOAD" | while IFS= read -r LINE; do
       case "$LINE" in
         data:*) 
           CHUNK="${LINE#data: }"
@@ -79,7 +83,7 @@ while true; do
     PAYLOAD=$(jq -n --argjson m "$HISTORY" --argjson t "$MAX_TOKENS" \
       '{messages:$m,max_tokens:$t}')
     REPLY=$(curl -s "$BASE_URL/v1/chat/completions" \
-      -H "Content-Type: application/json" -d "$PAYLOAD" | jq -r '.choices[0].message.content')
+      -H "Content-Type: application/json" "${AUTH_HEADER[@]}" -d "$PAYLOAD" | jq -r '.choices[0].message.content')
     echo -e "${GREEN}ai   ▸ ${RESET}$REPLY"
     echo
     HISTORY=$(jq --arg a "$REPLY" '. + [{role:"assistant",content:$a}]' <<<"$HISTORY")
